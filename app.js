@@ -246,11 +246,101 @@ class VoiceWebSocketTester {
             this.elements.bytesMessage.value = '';
         }
     }
+    async sendVoiceData(audioBlob) {
+        if (this.ws && this.isConnected) {
+            try {
+                // First, send audio metadata as JSON
+                const metadata = {
+                    timestamp: Date.now() / 1000,
+                    duration: 0,
+                    sampleRate: 16000, // Match what your backend expects
+                    channels: 1, // mono
+                    format: "audio/wav"
+                };
+
+                // Send metadata first
+                this.ws.send(JSON.stringify(metadata));
+                this.addMessage(`📤 Sent Audio Metadata: ${JSON.stringify(metadata)}`, 'sent', 'metadata');
+
+                // Wait a moment, then process and send audio data
+                setTimeout(async () => {
+                    // Convert audio blob to proper format
+                    const audioBuffer = await this.convertAudioToInt16PCM(audioBlob);
+
+                    if (audioBuffer) {
+                        this.ws.send(audioBuffer);
+                        this.stats.sent += 2; // metadata + audio
+                        this.updateStats();
+                        this.addMessage(`📤 Sent Voice Data: ${(audioBuffer.byteLength / 1024).toFixed(2)} KB`, 'sent', 'voice');
+                        this.elements.recordingStatus.textContent = 'Voice data sent successfully!';
+                        this.elements.recordingStatus.style.color = '#388e3c';
+                    } else {
+                        this.addMessage(`❌ Failed to convert audio data`, 'error', 'error');
+                    }
+
+                    // Reset status after 3 seconds
+                    setTimeout(() => {
+                        this.elements.recordingStatus.textContent = 'Click "Start Recording" to begin voice capture';
+                        this.elements.recordingStatus.style.color = '#666';
+                    }, 3000);
+                }, 100);
+
+            } catch (error) {
+                this.addMessage(`❌ Error sending voice data: ${error.message}`, 'error', 'error');
+            }
+        }
+    }
+
+    async convertAudioToInt16PCM(audioBlob) {
+        try {
+            // Create audio context
+            const audioContext = new (window.AudioContext || window.webkitAudioContext)({
+                sampleRate: 16000 // Match backend expectation
+            });
+
+            // Convert blob to array buffer
+            const arrayBuffer = await audioBlob.arrayBuffer();
+
+            // Decode audio data
+            const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
+
+            // Get audio data (first channel only for mono)
+            const audioData = audioBuffer.getChannelData(0);
+
+            // Convert float32 to int16
+            const int16Data = new Int16Array(audioData.length);
+            for (let i = 0; i < audioData.length; i++) {
+                // Convert from [-1, 1] to [-32768, 32767]
+                int16Data[i] = Math.max(-32768, Math.min(32767, audioData[i] * 32768));
+            }
+
+            // Return as ArrayBuffer
+            return int16Data.buffer;
+
+        } catch (error) {
+            console.error('Error converting audio:', error);
+            return null;
+        }
+    }
 
     async startRecording() {
         try {
-            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            this.mediaRecorder = new MediaRecorder(stream);
+            const stream = await navigator.mediaDevices.getUserMedia({
+                audio: {
+                    sampleRate: 16000, // Request 16kHz sample rate
+                    channelCount: 1,   // Request mono
+                    echoCancellation: true,
+                    noiseSuppression: true
+                }
+            });
+
+            // Use specific options for MediaRecorder
+            const options = {
+                mimeType: 'audio/webm;codecs=opus', // or 'audio/wav' if supported
+                audioBitsPerSecond: 128000
+            };
+
+            this.mediaRecorder = new MediaRecorder(stream, options);
             this.audioChunks = [];
 
             this.mediaRecorder.ondataavailable = (event) => {
@@ -258,7 +348,8 @@ class VoiceWebSocketTester {
             };
 
             this.mediaRecorder.onstop = () => {
-                const audioBlob = new Blob(this.audioChunks, { type: 'audio/wav' });
+                const mimeType = this.mediaRecorder.mimeType || 'audio/webm';
+                const audioBlob = new Blob(this.audioChunks, { type: mimeType });
                 this.sendVoiceData(audioBlob);
 
                 // Stop all tracks to release microphone
@@ -285,24 +376,6 @@ class VoiceWebSocketTester {
             this.elements.stopRecordBtn.disabled = true;
             this.elements.recordingStatus.textContent = 'Recording stopped. Processing audio...';
             this.elements.recordingStatus.style.color = '#f57c00';
-        }
-    }
-
-    async sendVoiceData(audioBlob) {
-        if (this.ws && this.isConnected) {
-            const arrayBuffer = await audioBlob.arrayBuffer();
-            this.ws.send(arrayBuffer);
-            this.stats.sent++;
-            this.updateStats();
-            this.addMessage(`📤 Sent Voice Data: ${(arrayBuffer.byteLength / 1024).toFixed(2)} KB`, 'sent', 'voice');
-            this.elements.recordingStatus.textContent = 'Voice data sent successfully!';
-            this.elements.recordingStatus.style.color = '#388e3c';
-
-            // Reset status after 3 seconds
-            setTimeout(() => {
-                this.elements.recordingStatus.textContent = 'Click "Start Recording" to begin voice capture';
-                this.elements.recordingStatus.style.color = '#666';
-            }, 3000);
         }
     }
 
